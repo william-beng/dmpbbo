@@ -17,6 +17,8 @@
 
 
 import numpy as np
+
+np.set_printoptions(threshold=np.nan)
 import os
 import sys
 
@@ -28,6 +30,11 @@ from dmp_bbo.Rollout import Rollout, loadRolloutFromDirectory
 
 from bbo.bbo_plotting import *
 
+
+from sklearn.decomposition import PCA
+from sklearn.decomposition import TruncatedSVD
+from sklearn.manifold import TSNE
+
 def containsNewDistribution(directory):
     if os.path.exists(directory+"/distribution_new_mean.txt"):
         return True
@@ -38,7 +45,7 @@ def containsNewDistribution(directory):
 def plotOptimizationRolloutsTask(directory,fig,task,plot_all_rollouts=False):
     plotOptimizationRollouts(directory,fig,task.plotRollout,plot_all_rollouts)
 
-def plotOptimizationRollouts(directory,fig,plotRollout=None,plot_all_rollouts=False):
+def plotOptimizationRollouts(directory,fig,plotRollout=None,plot_all_rollouts=False, dimensionality_reduction='SVD'):
     
     if not fig:    
         fig = plt.figure(1,figsize=(9, 4))
@@ -59,21 +66,90 @@ def plotOptimizationRollouts(directory,fig,plotRollout=None,plot_all_rollouts=Fa
     exploration_curve = []
     
     i_samples = 0    
+
+    if dimensionality_reduction != None:
+        # Do dimensionality reduction by finding the 2 principal direction out of the n-dimensional set of data (means of gaussian distributions)
+        # 1) Fetch the data from folder and them stack them in the array time_series_distribution
+        # 2) Do dimensionality reduction using SVD or TSNE
+
+        # 1)
+        time_series_distribution = []
+        for i_update in range(n_updates+1):
+            update_dir = '%s/update%05d' % (directory, i_update)
+        
+            # Read data
+            try:
+                mean = np.loadtxt(update_dir+"/distribution_mean.txt")
+                time_series_distribution.append(mean)
+
+            except IOError:
+                print("IOError")
+                return(-1)
+
+        # 2)
+        if dimensionality_reduction == 'SVD':
+            # time_series_distribution = PCA(n_components=2).fit_transform(time_series_distribution)
+
+            U,S,V = np.linalg.svd(time_series_distribution, full_matrices=True)
+            # Truncated SVD
+            time_series_distribution = np.matmul(U[:,0:2],np.diag(S[0:2]))
+            print("manual truncation ", time_series_distribution)
+
+            
+        elif dimensionality_reduction == 'TSNE':
+            time_series_distribution = TSNE(n_components=2, perplexity=5).fit_transform(time_series_distribution)
+
+
     for i_update in range(n_updates):
     
         update_dir = '%s/update%05d' % (directory, i_update)
     
-        # Read data
-        mean = np.loadtxt(update_dir+"/distribution_mean.txt")
-        covar = np.loadtxt(update_dir+"/distribution_covar.txt")
-        distribution = DistributionGaussian(mean,covar)
-        
-        try:
-            mean = np.loadtxt(update_dir+"/distribution_new_mean.txt")
-            covar = np.loadtxt(update_dir+"/distribution_new_covar.txt")
-            distribution_new = DistributionGaussian(mean,covar)
-        except IOError:
-            distribution_new = None
+        if dimensionality_reduction != None:
+            try:
+                # Read data
+                mean = time_series_distribution[i_update, :]
+                covar = np.loadtxt(update_dir+"/distribution_covar.txt")
+            except IOError:
+                distribution_new = None
+
+            if dimensionality_reduction == 'SVD':
+                # change coordinates for the covariance matrix into principal directions using V
+                covar = np.matmul(np.matmul(np.transpose(V),covar),V)
+                distribution = DistributionGaussian(mean,covar[0:2,0:2])
+            elif dimensionality_reduction == 'TSNE':
+                # for tSNE we have no choice, do an SVD of the covariance matrix and take its principal singular values
+                U_tSNE,S_tSNE,V_tSNE = np.linalg.svd(covar, full_matrices=True)
+                distribution = DistributionGaussian(mean,np.diag(S_tSNE[0:2]))
+
+
+            try:
+                mean = time_series_distribution[i_update+1, :]
+                covar = np.loadtxt(update_dir+"/distribution_new_covar.txt")
+            except IOError:
+                distribution_new = None
+
+            if dimensionality_reduction == 'SVD':
+                # change coordinates for the covariance matrix into principal directions using V
+                covar = np.matmul(np.matmul(np.transpose(V),covar),V)
+                distribution_new = DistributionGaussian(mean,covar[0:2,0:2])
+
+            elif dimensionality_reduction == 'TSNE':
+                # for tSNE we have no choice, do an SVD of the covariance matrix and take its principal singular values
+                U_tSNE,S_tSNE,V_tSNE = np.linalg.svd(covar, full_matrices=True)
+                distribution_new = DistributionGaussian(mean,np.diag(S_tSNE[0:2]))
+
+        else:
+            # Read data
+            mean = np.loadtxt(update_dir+"/distribution_mean.txt")
+            covar = np.loadtxt(update_dir+"/distribution_covar.txt")
+            distribution = DistributionGaussian(mean,covar)
+            
+            try:
+                mean = np.loadtxt(update_dir+"/distribution_new_mean.txt")
+                covar = np.loadtxt(update_dir+"/distribution_new_covar.txt")
+                distribution_new = DistributionGaussian(mean,covar)
+            except IOError:
+                distribution_new = None
     
         try:
             covar_block_sizes = np.loadtxt(update_dir+"/covar_block_sizes.txt")
@@ -126,8 +202,7 @@ def plotOptimizationRollouts(directory,fig,plotRollout=None,plot_all_rollouts=Fa
         ax_space = fig.add_subplot(1,n_subplots,i_subplot)
         i_subplot += 1
         highlight = (i_update==0)
-        plotUpdate(distribution,cost_eval,samples,costs,weights,distribution_new,ax_space,highlight)
-            
+        plotUpdate(distribution,cost_eval,samples,costs,weights,distribution_new,ax_space,highlight,plot_samples=False)
         
     
     plotExplorationCurve(exploration_curve,fig.add_subplot(1,n_subplots,i_subplot))
